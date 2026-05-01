@@ -47,4 +47,4 @@ For local development, point Pi directly at this checkout:
 pi -e /path/to/pi-axonhub
 ```
 
-OpenAI-compatible models are sent to AxonHub `/v1`. Anthropic-owned models are sent to AxonHub `/anthropic/v1`.
+OpenAI-compatible models are sent to AxonHub `/v1`. Anthropic-owned models are sent to AxonHub `/anthropic`. Gemini-owned models are sent to AxonHub `/gemini`.

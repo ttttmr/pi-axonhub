@@ -1,6 +1,7 @@
 import {
   createAssistantMessageEventStream,
   streamSimpleAnthropic,
+  streamSimpleGoogle,
   streamSimpleOpenAICompletions,
   type Api,
   type AssistantMessageEventStream,
@@ -127,7 +128,9 @@ async function readPiAuthApiKey() {
 }
 
 function modelBaseUrl(baseUrl: string, owner?: string) {
-  return owner === "anthropic" ? `${baseUrl}/anthropic` : `${baseUrl}/v1`;
+  if (owner === "anthropic") return `${baseUrl}/anthropic`;
+  if (owner === "gemini") return `${baseUrl}/gemini/v1beta`;
+  return `${baseUrl}/v1`;
 }
 
 function emptyErrorModel(model: Model<Api>, error: unknown) {
@@ -159,12 +162,14 @@ function streamAxonHub(model: Model<Api>, context: Context, options?: SimpleStre
       const config = axonhubModels.get(model.id);
       const owner = config?.owner;
       const baseUrl = modelBaseUrl(normalizeBaseUrl(model.baseUrl), owner);
-      const api = owner === "anthropic" ? "anthropic-messages" : "openai-completions";
+      const api: Api = owner === "anthropic" ? "anthropic-messages" : owner === "gemini" ? "google-generative-ai" : "openai-completions";
       const modelWithEndpoint = { ...model, api, baseUrl } as Model<Api>;
       const inner =
         api === "anthropic-messages"
           ? streamSimpleAnthropic(modelWithEndpoint as Model<"anthropic-messages">, context, options)
-          : streamSimpleOpenAICompletions(modelWithEndpoint as Model<"openai-completions">, context, options);
+          : api === "google-generative-ai"
+            ? streamSimpleGoogle(modelWithEndpoint as Model<"google-generative-ai">, context, options)
+            : streamSimpleOpenAICompletions(modelWithEndpoint as Model<"openai-completions">, context, options);
 
       for await (const event of inner) stream.push(event);
       stream.end();
@@ -289,7 +294,7 @@ function hasModality(model: ModelsDevModel | undefined, direction: "input" | "ou
 }
 
 function ownerFromMatch(item: AxonHubModel, match?: ModelsDevMatch) {
-  return item.owned_by ?? (match?.providerId === "anthropic" ? "anthropic" : match?.providerId === "openai" ? "openai" : undefined);
+  return item.owned_by ?? (match?.providerId === "anthropic" ? "anthropic" : match?.providerId === "google" ? "gemini" : match?.providerId === "openai" ? "openai" : undefined);
 }
 
 function toProviderModel(item: AxonHubModel, match?: ModelsDevMatch): AxonHubModelConfig | undefined {
@@ -299,7 +304,7 @@ function toProviderModel(item: AxonHubModel, match?: ModelsDevMatch): AxonHubMod
   const owner = ownerFromMatch(item, match);
   const supportsVision = item.capabilities?.vision ?? cached?.attachment ?? hasModality(cached, "input", "image") ?? true;
   const compat =
-    owner === "anthropic"
+    owner === "anthropic" || owner === "gemini"
       ? undefined
       : {
           supportsStore: false,

@@ -5,6 +5,7 @@ declare module "@mariozechner/pi-ai" {
     | "openai-responses"
     | "azure-openai-responses"
     | "openai-codex-responses"
+    | "google-generative-ai"
     | (string & {});
 
   export type Provider = string;
@@ -75,6 +76,11 @@ declare module "@mariozechner/pi-ai" {
   ): AssistantMessageEventStream;
   export function streamSimpleOpenAICompletions(
     model: Model<"openai-completions">,
+    context: Context,
+    options?: SimpleStreamOptions,
+  ): AssistantMessageEventStream;
+  export function streamSimpleGoogle(
+    model: Model<"google-generative-ai">,
     context: Context,
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStream;
