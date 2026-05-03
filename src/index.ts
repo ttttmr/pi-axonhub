@@ -240,7 +240,8 @@ function ownerFromMatch(item: AxonHubModel, match?: ModelsDevMatch) {
   return normalizeOwner(item.owned_by) ?? normalizeOwner(match?.providerId);
 }
 
-function modelApi(owner?: string): Api {
+function modelApi(id: string, owner?: string): Api {
+  if (id.includes("gpt")) return "openai-responses";
   if (owner === "anthropic") return "anthropic-messages";
   if (owner === "gemini") return "google-generative-ai";
   return "openai-completions";
@@ -272,7 +273,7 @@ function toProviderModel(baseUrl: string, item: AxonHubModel, match?: ModelsDevM
   return {
     id: item.id,
     name: item.name ?? item.display_name ?? cached?.name ?? item.id,
-    api: modelApi(owner),
+    api: modelApi(item.id, owner),
     reasoning: item.capabilities?.reasoning ?? cached?.reasoning ?? true,
     input: supportsVision ? ["text", "image"] : ["text"],
     cost: {
