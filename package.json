@@ -1,6 +1,6 @@
 {
   "name": "@pandada8/pi-axonhub",
-  "version": "0.1.4",
+  "version": "1.0.0",
   "description": "Pi extension for discovering AxonHub models",
   "type": "module",
   "license": "MIT",
