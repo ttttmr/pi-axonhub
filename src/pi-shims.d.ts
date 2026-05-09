@@ -1,4 +1,4 @@
-declare module "@mariozechner/pi-ai" {
+declare module "@earendil-works/pi-ai" {
   export type Api =
     | "openai-completions"
     | "anthropic-messages"
@@ -87,8 +87,8 @@ declare module "@mariozechner/pi-ai" {
   export function getModels(provider: string): Model<Api>[];
 }
 
-declare module "@mariozechner/pi-coding-agent" {
-  import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
+declare module "@earendil-works/pi-coding-agent" {
+  import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 
   export interface ProviderModelConfig {
     id: string;

@@ -1,5 +1,5 @@
-import { type Api } from "@mariozechner/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ProviderModelConfig } from "@mariozechner/pi-coding-agent";
+import { type Api } from "@earendil-works/pi-ai";
+import { getAgentDir, type ExtensionAPI, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -305,5 +305,28 @@ export default async function (pi: ExtensionAPI, options?: PluginOptions) {
     baseUrl,
     apiKey: options?.apiKey ?? "AXONHUB_API_KEY",
     models,
+  });
+
+  // Inject web_search tool for gpt-* models from axonhub
+  // @ts-expect-error - ExtensionAPI.on exists at runtime via jiti, but ts can't resolve due to symlink
+  pi.on("before_provider_request", (event: { payload: unknown }, ctx: { model?: { provider: string; id: string } }) => {
+    const model = ctx.model;
+    if (model?.provider !== PROVIDER_ID) return;
+    if (!model.id.startsWith("gpt-")) return;
+
+    const payload = event.payload as {
+      tools?: Array<{ type: string; name?: string; [key: string]: unknown }>;
+      [key: string]: unknown;
+    };
+
+    // Add web_search built-in tool
+    const webSearchTool = { type: "web_search" as const };
+    const existingTools = payload.tools ?? [];
+    const hasWebSearch = existingTools.some((t) => t.type === "web_search");
+    if (!hasWebSearch) {
+      payload.tools = [...existingTools, webSearchTool];
+    }
+
+    return payload;
   });
 }
