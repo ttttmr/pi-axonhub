@@ -1,20 +1,16 @@
 import { type Api } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const PROVIDER_ID = "axonhub";
 const DEFAULT_BASE_URL = "http://localhost:8090";
 const AXONHUB_CACHE_FILE = join(homedir(), ".cache", "pi", "axonhub-models.json");
-const MODELS_DEV_CACHE_FILE = join(homedir(), ".cache", "pi", "models-dev-api.json");
-const MODELS_DEV_URL = "https://models.dev/api.json";
-const CACHE_TTL = 24 * 60 * 60 * 1000;
 
 type PluginOptions = {
   baseUrl?: string;
   apiKey?: string;
-  cacheTtl?: number;
 };
 
 type AxonHubModel = {
@@ -44,41 +40,6 @@ type AxonHubModel = {
 
 type AxonHubModelsResponse = {
   data?: AxonHubModel[];
-};
-
-type ModelsDevModel = {
-  id?: string;
-  name?: string;
-  attachment?: boolean;
-  reasoning?: boolean;
-  tool_call?: boolean;
-  modalities?: {
-    input?: string[];
-    output?: string[];
-  };
-  cost?: {
-    input?: number;
-    output?: number;
-    cache_read?: number;
-    cache_write?: number;
-  };
-  limit?: {
-    context?: number;
-    input?: number;
-    output?: number;
-  };
-};
-
-type ModelsDevProvider = {
-  id?: string;
-  models?: Record<string, ModelsDevModel>;
-};
-
-type ModelsDevResponse = Record<string, ModelsDevProvider>;
-
-type ModelsDevMatch = {
-  providerId: string;
-  model: ModelsDevModel;
 };
 
 type AxonHubModelConfig = ProviderModelConfig;
@@ -114,16 +75,6 @@ async function readPiAuthApiKey() {
 }
 
 
-async function readFreshCache<T>(file: string, ttl: number) {
-  try {
-    const info = await stat(file);
-    if (Date.now() - info.mtimeMs > ttl) return;
-    return JSON.parse(await readFile(file, "utf8")) as T;
-  } catch {
-    return;
-  }
-}
-
 async function readCache<T>(file: string) {
   try {
     return JSON.parse(await readFile(file, "utf8")) as T;
@@ -137,97 +88,16 @@ async function writeCache(file: string, payload: unknown) {
   await writeFile(file, JSON.stringify(payload, null, 2));
 }
 
-async function fetchModels(baseUrl: string, key: string) {
-  const headers = { Authorization: `Bearer ${key}` };
-  const [basic, detailed] = await Promise.all([
-    fetch(`${baseUrl}/v1/models`, { headers }),
-    fetch(`${baseUrl}/v1/models?include=all`, { headers }),
-  ]);
-
-  const payloads: AxonHubModelsResponse[] = [];
-  for (const response of [basic, detailed]) {
-    if (!response.ok) continue;
-    const payload = (await response.json()) as AxonHubModelsResponse;
-    if (Array.isArray(payload.data)) payloads.push(payload);
-  }
-  if (payloads.length === 0) return { data: [] };
-
-  const byId = new Map<string, AxonHubModel>();
-  for (const payload of payloads) {
-    for (const model of payload.data ?? []) {
-      if (!model.id) continue;
-      byId.set(model.id, { ...byId.get(model.id), ...model });
-    }
-  }
-  return { data: [...byId.values()] };
+async function fetchModels(baseUrl: string, key: string): Promise<AxonHubModelsResponse> {
+  const response = await fetch(`${baseUrl}/v1/models?include=all`, {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  const payload = (await response.json()) as AxonHubModelsResponse;
+  return { data: Array.isArray(payload.data) ? payload.data.filter((m) => m.id) : [] };
 }
 
-async function loadModels(baseUrl: string, key: string, ttl: number) {
-  const cached = await readFreshCache<AxonHubModelsResponse>(AXONHUB_CACHE_FILE, ttl);
-  if (cached) return cached;
-
-  try {
-    const payload = await fetchModels(baseUrl, key);
-    await writeCache(AXONHUB_CACHE_FILE, payload);
-    return payload;
-  } catch {
-    return (await readCache<AxonHubModelsResponse>(AXONHUB_CACHE_FILE)) ?? { data: [] };
-  }
-}
-
-async function fetchModelsDev() {
-  const response = await fetch(MODELS_DEV_URL);
-  if (!response.ok) throw new Error(`Failed to fetch ${MODELS_DEV_URL}: ${response.status} ${response.statusText}`);
-  return (await response.json()) as ModelsDevResponse;
-}
-
-async function loadModelsDev(ttl: number) {
-  const cached = await readFreshCache<ModelsDevResponse>(MODELS_DEV_CACHE_FILE, ttl);
-  if (cached) return cached;
-
-  try {
-    const payload = await fetchModelsDev();
-    await writeCache(MODELS_DEV_CACHE_FILE, payload);
-    return payload;
-  } catch {
-    return (await readCache<ModelsDevResponse>(MODELS_DEV_CACHE_FILE)) ?? {};
-  }
-}
-
-function modelsDevIndex(payload: ModelsDevResponse) {
-  const index = new Map<string, ModelsDevMatch[]>();
-
-  for (const [providerId, provider] of Object.entries(payload)) {
-    for (const [key, model] of Object.entries(provider.models ?? {})) {
-      const match = { providerId, model };
-      for (const id of new Set([key, model.id].filter((value): value is string => typeof value === "string"))) {
-        const matches = index.get(id);
-        if (matches) matches.push(match);
-        else index.set(id, [match]);
-      }
-    }
-  }
-
-  return index;
-}
-
-function modelsDevMatch(item: AxonHubModel, index: Map<string, ModelsDevMatch[]>) {
-  if (!item.id) return;
-  const matches = index.get(item.id);
-  if (!matches?.length) return;
-
-  const owner = item.owned_by;
-  return (
-    (owner ? matches.find((match) => match.providerId === owner) : undefined) ??
-    matches.find((match) => match.providerId === "openai") ??
-    matches.find((match) => match.providerId === "anthropic") ??
-    matches[0]
-  );
-}
-
-function hasModality(model: ModelsDevModel | undefined, direction: "input" | "output", modality: string) {
-  return model?.modalities?.[direction]?.includes(modality);
-}
 
 const OWNER_BY_PROVIDER_ID: Record<string, "anthropic" | "gemini" | "openai"> = {
   anthropic: "anthropic",
@@ -240,8 +110,8 @@ function normalizeOwner(owner?: string) {
   return owner ? OWNER_BY_PROVIDER_ID[owner] : undefined;
 }
 
-function ownerFromMatch(item: AxonHubModel, match?: ModelsDevMatch) {
-  return normalizeOwner(item.owned_by) ?? normalizeOwner(match?.providerId);
+function ownerFromItem(item: AxonHubModel) {
+  return normalizeOwner(item.owned_by);
 }
 
 function modelApi(id: string, owner?: string): Api {
@@ -282,30 +152,35 @@ function modelCompat(id: string, owner?: string): ProviderModelConfig["compat"] 
   };
 }
 
-function toProviderModel(baseUrl: string, item: AxonHubModel, match?: ModelsDevMatch): AxonHubModelConfig | undefined {
+function toProviderModel(baseUrl: string, item: AxonHubModel): AxonHubModelConfig | undefined {
   if (!item.id) return;
 
-  const cached = match?.model;
-  const owner = ownerFromMatch(item, match);
-  const supportsVision = item.capabilities?.vision ?? cached?.attachment ?? hasModality(cached, "input", "image") ?? true;
+  const owner = ownerFromItem(item);
+  const supportsVision = item.capabilities?.vision ?? true;
 
   return {
     id: item.id,
-    name: item.name ?? item.display_name ?? cached?.name ?? item.id,
+    name: item.name ?? item.display_name ?? item.id,
     api: modelApi(item.id, owner),
-    reasoning: item.capabilities?.reasoning ?? cached?.reasoning ?? true,
+    reasoning: item.capabilities?.reasoning ?? true,
     input: supportsVision ? ["text", "image"] : ["text"],
     cost: {
-      input: item.pricing?.input ?? cached?.cost?.input ?? 0,
-      output: item.pricing?.output ?? cached?.cost?.output ?? 0,
-      cacheRead: item.pricing?.cache_read ?? item.pricing?.cacheRead ?? cached?.cost?.cache_read ?? 0,
-      cacheWrite: item.pricing?.cache_write ?? item.pricing?.cacheWrite ?? cached?.cost?.cache_write ?? 0,
+      input: item.pricing?.input ?? 0,
+      output: item.pricing?.output ?? 0,
+      cacheRead: item.pricing?.cache_read ?? item.pricing?.cacheRead ?? 0,
+      cacheWrite: item.pricing?.cache_write ?? item.pricing?.cacheWrite ?? 0,
     },
-    contextWindow: item.context_length ?? cached?.limit?.context ?? 200000,
-    maxTokens: item.max_output_tokens ?? cached?.limit?.output ?? 32000,
+    contextWindow: item.context_length ?? 200000,
+    maxTokens: item.max_output_tokens ?? 32000,
     compat: modelCompat(item.id, owner),
     baseUrl: modelBaseUrl(baseUrl, owner),
   };
+}
+
+function buildModels(baseUrl: string, payload: AxonHubModelsResponse): AxonHubModelConfig[] {
+  return (payload.data ?? [])
+    .map((item) => toProviderModel(baseUrl, item))
+    .filter((model): model is AxonHubModelConfig => model !== undefined);
 }
 
 export default async function (pi: ExtensionAPI, options?: PluginOptions) {
@@ -313,18 +188,74 @@ export default async function (pi: ExtensionAPI, options?: PluginOptions) {
   const key = resolveApiKey(options) ?? (await readPiAuthApiKey());
   if (!key) return;
 
-  const ttl = options?.cacheTtl ?? CACHE_TTL;
-  const [payload, modelsDev] = await Promise.all([loadModels(baseUrl, key, ttl), loadModelsDev(ttl)]);
-  const modelIndex = modelsDevIndex(modelsDev);
-  const models = (payload.data ?? [])
-    .map((item) => toProviderModel(baseUrl, item, modelsDevMatch(item, modelIndex)))
-    .filter((model): model is AxonHubModelConfig => model !== undefined);
+  const apiKeyOption = options?.apiKey ?? "AXONHUB_API_KEY";
+  const register = (models: AxonHubModelConfig[]) => {
+    pi.registerProvider(PROVIDER_ID, { baseUrl, apiKey: apiKeyOption, models });
+  };
 
-  pi.registerProvider(PROVIDER_ID, {
-    baseUrl,
-    apiKey: options?.apiKey ?? "AXONHUB_API_KEY",
-    models,
+  // Notifications: queued before session_start, then routed to ctx.ui.notify after.
+  // Fallback to console.warn only when there is no UI (print/RPC mode).
+  type Notice = { message: string; type: "warning" | "error" };
+  type UI = { notify: (m: string, t?: "info" | "warning" | "error") => void };
+  let ui: UI | null = null;
+  let hasUI = false;
+  let sessionStarted = false;
+  const pendingNotices: Notice[] = [];
+  const notify = (message: string, type: "warning" | "error" = "warning") => {
+    const prefixed = `[axonhub] ${message}`;
+    if (sessionStarted) {
+      if (hasUI && ui) ui.notify(prefixed, type);
+      else console.warn(prefixed);
+      return;
+    }
+    pendingNotices.push({ message: prefixed, type });
+  };
+
+  // @ts-expect-error - ExtensionAPI.on exists at runtime via jiti, but ts can't resolve due to symlink
+  pi.on("session_start", (_event, ctx: { ui: UI; hasUI: boolean }) => {
+    ui = ctx.ui;
+    hasUI = ctx.hasUI;
+    sessionStarted = true;
+    if (!hasUI) {
+      for (const n of pendingNotices) console.warn(n.message);
+    } else {
+      for (const n of pendingNotices) ui.notify(n.message, n.type);
+    }
+    pendingNotices.length = 0;
   });
+
+  const errMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  const cached = await readCache<AxonHubModelsResponse>(AXONHUB_CACHE_FILE);
+
+  if (cached) {
+    // Fast path: register cached models immediately, refresh in background
+    register(buildModels(baseUrl, cached));
+
+    fetchModels(baseUrl, key)
+      .then(async (payload) => {
+        await writeCache(AXONHUB_CACHE_FILE, payload);
+        register(buildModels(baseUrl, payload));
+      })
+      .catch((err) => {
+        notify(`failed to refresh models from ${baseUrl}, using cached list: ${errMessage(err)}`);
+      });
+    return;
+  }
+
+  // Cold start: fetch synchronously so models are available on first use.
+  // Failures must not block pi startup — fall back to empty provider with a warning.
+  try {
+    const payload = await fetchModels(baseUrl, key);
+    await writeCache(AXONHUB_CACHE_FILE, payload);
+    register(buildModels(baseUrl, payload));
+  } catch (err) {
+    notify(
+      `failed to fetch models from ${baseUrl}: ${errMessage(err)}. No axonhub models available this session.`,
+      "error",
+    );
+    register([]);
+  }
 
   // Inject web_search tool for gpt-* models from axonhub
   // @ts-expect-error - ExtensionAPI.on exists at runtime via jiti, but ts can't resolve due to symlink
